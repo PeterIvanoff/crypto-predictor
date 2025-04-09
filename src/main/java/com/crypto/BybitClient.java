@@ -45,8 +45,8 @@ public class BybitClient {
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleAtFixedRate(this::sendPing, 20, 20, TimeUnit.SECONDS);
         loadHistoricalData();
-        indicators.calculate(); // Расчёт индикаторов
-        imbalanceZones.calculate(); // Расчёт зон дисбаланса
+        indicators.calculateAndSaveIndicators(); // Из предыдущего исправления
+        imbalanceZones.calculateAndSaveZones();  // Добавляем вызов
     }
 
     private void sendPing() {
