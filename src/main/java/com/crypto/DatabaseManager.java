@@ -1,5 +1,7 @@
 package com.crypto;
 
+import org.springframework.stereotype.Component;
+
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
@@ -8,6 +10,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
+@Component
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:crypto_data.db";
 
@@ -37,14 +40,17 @@ public class DatabaseManager {
     public void saveCandle(long timestamp, double open, double high, double low, double close, double volume) {
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT OR IGNORE INTO candles (timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?)")) {
+                     "INSERT OR REPLACE INTO candles (timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?)")) {
             stmt.setLong(1, timestamp);
             stmt.setDouble(2, open);
             stmt.setDouble(3, high);
             stmt.setDouble(4, low);
             stmt.setDouble(5, close);
             stmt.setDouble(6, volume);
-            stmt.executeUpdate();
+            int rowsAffected = stmt.executeUpdate();
+            if (rowsAffected > 0) {
+                System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -53,11 +59,12 @@ public class DatabaseManager {
     public void saveLiquidation(long timestamp, String side, double qty) {
         try (Connection conn = getConnection();
              PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT INTO liquidations (timestamp, side, qty) VALUES (?, ?, ?)")) {
+                     "INSERT OR REPLACE INTO liquidations (timestamp, side, qty) VALUES (?, ?, ?)")) {
             stmt.setLong(1, timestamp);
             stmt.setString(2, side);
             stmt.setDouble(3, qty);
             stmt.executeUpdate();
+            System.out.println("Saved liquidation: " + side + " " + qty + " at " + timestamp);
         } catch (SQLException e) {
             e.printStackTrace();
         }

@@ -1,26 +1,23 @@
 package com.crypto;
 
+import jakarta.annotation.PostConstruct;
 import jakarta.websocket.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
-import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-@ClientEndpoint
 @Component
+@ClientEndpoint
 public class BybitClient {
     private final DatabaseManager dbManager;
     private final Indicators indicators;
@@ -28,10 +25,9 @@ public class BybitClient {
     private final NeuralNetwork neuralNetwork;
     private final PredictionWebSocketHandler webSocketHandler;
     private final PredictionController predictionController;
-    private Session wsSession;
-    private ScheduledExecutorService pingExecutor;
 
-    @Autowired
+    private Session webSocketSession;
+
     public BybitClient(DatabaseManager dbManager, Indicators indicators, ImbalanceZones imbalanceZones,
                        NeuralNetwork neuralNetwork, PredictionWebSocketHandler webSocketHandler,
                        PredictionController predictionController) {
@@ -41,25 +37,43 @@ public class BybitClient {
         this.neuralNetwork = neuralNetwork;
         this.webSocketHandler = webSocketHandler;
         this.predictionController = predictionController;
-        loadHistoricalData();
-        indicators.calculateAndSaveIndicators();
-        imbalanceZones.calculateAndSaveZones();
+    }
+
+    @PostConstruct
+    public void init() {
         connectWebSocket();
-        predictAndBroadcast(); // Начальное предсказание
+        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+        executor.scheduleAtFixedRate(this::sendPing, 20, 20, TimeUnit.SECONDS);
+        loadHistoricalData();
+        indicators.calculate(); // Расчёт индикаторов
+        imbalanceZones.calculate(); // Расчёт зон дисбаланса
+    }
+
+    private void sendPing() {
+        if (webSocketSession != null && webSocketSession.isOpen()) {
+            String pingMessage = "{\"op\":\"ping\"}";
+            webSocketSession.getAsyncRemote().sendText(pingMessage);
+            System.out.println("Sent ping to keep WebSocket alive.");
+        }
     }
 
     public void loadHistoricalData() {
-        long lastTimestamp = dbManager.getLastCandleTimestamp();
-        long now = System.currentTimeMillis();
-        if (lastTimestamp == 0) lastTimestamp = now - Constants.TRAINING_PERIOD * 15 * 60 * 1000;
-
         HttpClient client = HttpClient.newHttpClient();
         int totalCandlesLoaded = 0;
-        long currentStart = lastTimestamp;
+        long now = System.currentTimeMillis();
+        long currentStart = now - Constants.TRAINING_PERIOD * 15 * 60 * 1000;
+
+        try (java.sql.Connection conn = dbManager.getConnection();
+             java.sql.PreparedStatement stmt = conn.prepareStatement("DELETE FROM candles")) {
+            stmt.executeUpdate();
+            System.out.println("Cleared candles table before loading new data.");
+        } catch (java.sql.SQLException e) {
+            e.printStackTrace();
+        }
 
         while (totalCandlesLoaded < Constants.TRAINING_PERIOD) {
             String url = Constants.BYBIT_API_URL + "/v5/market/kline?category=linear&symbol=" + Constants.CURRENCY_PAIR +
-                    "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&end=" + now + "&limit=200";
+                    "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&limit=200";
 
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -68,14 +82,20 @@ public class BybitClient {
 
             try {
                 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                System.out.println("API Response: " + response.body());
                 JSONObject json = new JSONObject(response.body());
                 JSONArray result = json.getJSONObject("result").getJSONArray("list");
 
-                if (result.length() == 0) break; // Нет больше данных
+                if (result.length() == 0) {
+                    System.out.println("No more candles to load at timestamp: " + currentStart);
+                    break;
+                }
 
+                Set<Long> uniqueTimestamps = new HashSet<>();
                 for (int i = result.length() - 1; i >= 0; i--) {
                     JSONArray candle = result.getJSONArray(i);
                     long timestamp = candle.getLong(0);
+                    uniqueTimestamps.add(timestamp);
                     double open = candle.getDouble(1);
                     double high = candle.getDouble(2);
                     double low = candle.getDouble(3);
@@ -83,15 +103,13 @@ public class BybitClient {
                     double volume = candle.getDouble(5);
                     dbManager.saveCandle(timestamp, open, high, low, close, volume);
                     totalCandlesLoaded++;
+                    System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
                 }
-
-                // Сдвигаем start на самый ранний timestamp из полученных данных
-                currentStart = result.getJSONArray(result.length() - 1).getLong(0) - 15 * 60 * 1000;
+                System.out.println("Unique timestamps in this batch: " + uniqueTimestamps.size());
                 System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
 
-                if (totalCandlesLoaded >= Constants.TRAINING_PERIOD) break;
-
-            } catch (IOException | InterruptedException e) {
+                currentStart = result.getJSONArray(0).getLong(0) + 15 * 60 * 1000;
+            } catch (Exception e) {
                 e.printStackTrace();
                 break;
             }
@@ -102,136 +120,51 @@ public class BybitClient {
     private void connectWebSocket() {
         try {
             WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-            wsSession = container.connectToServer(this, new URI(Constants.BYBIT_WS_URL));
-
-            wsSession.getAsyncRemote().sendText("{\"op\": \"subscribe\", \"args\": [\"liquidation." + Constants.CURRENCY_PAIR + "\"]}");
-
-            pingExecutor = Executors.newSingleThreadScheduledExecutor();
-            pingExecutor.scheduleAtFixedRate(() -> {
-                if (wsSession != null && wsSession.isOpen()) {
-                    wsSession.getAsyncRemote().sendText("{\"op\": \"ping\"}");
-                }
-            }, 0, Constants.WS_PING_INTERVAL, TimeUnit.SECONDS);
-            System.out.println("WebSocket connected and subscribed to liquidations.");
+            container.connectToServer(this, new URI(Constants.BYBIT_WS_URL));
         } catch (Exception e) {
+            System.err.println("Failed to connect to WebSocket: " + e.getMessage());
             e.printStackTrace();
         }
     }
 
+    private void subscribeToLiquidations() {
+        if (webSocketSession != null && webSocketSession.isOpen()) {
+            String subscriptionMessage = "{\"op\":\"subscribe\",\"args\":[\"liquidation.ETHUSDT\"]}";
+            webSocketSession.getAsyncRemote().sendText(subscriptionMessage);
+            System.out.println("Subscribed to liquidation.ETHUSDT");
+        }
+    }
+
+    @OnOpen
+    public void onOpen(Session session) {
+        this.webSocketSession = session;
+        System.out.println("WebSocket session opened.");
+        subscribeToLiquidations();
+    }
+
     @OnMessage
     public void onMessage(String message) {
+        System.out.println("WebSocket raw message: " + message);
         JSONObject json = new JSONObject(message);
         if (json.has("data") && json.getJSONObject("data").has("ts")) {
             JSONObject data = json.getJSONObject("data");
             long timestamp = data.getLong("ts");
             String side = data.getString("side").equals("Buy") ? "short" : "long";
-            double qty = data.getDouble("qty");
+            double qty = data.getDouble("size");
             dbManager.saveLiquidation(timestamp, side, qty);
             System.out.println("Liquidation: " + side + " " + qty + " at " + timestamp);
-        } else {
-            System.out.println("WebSocket message: " + message);
         }
-    }
-
-    @OnError
-    public void onError(Throwable t) {
-        t.printStackTrace();
-        reconnect();
     }
 
     @OnClose
-    public void onClose() {
-        System.out.println("WebSocket closed. Reconnecting...");
-        reconnect();
+    public void onClose(Session session, CloseReason reason) {
+        this.webSocketSession = null;
+        System.out.println("WebSocket closed: " + reason.getReasonPhrase());
     }
 
-    private void reconnect() {
-        try {
-            Thread.sleep(5000);
-            connectWebSocket();
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-    }
-
-    public void closeWebSocket() {
-        if (pingExecutor != null && !pingExecutor.isShutdown()) {
-            pingExecutor.shutdownNow();
-        }
-        if (wsSession != null && wsSession.isOpen()) {
-            try {
-                wsSession.close();
-                System.out.println("WebSocket closed manually.");
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    @Scheduled(fixedRate = Constants.PREDICTION_INTERVAL)
-    public void predictAndBroadcast() {
-        List<Candle> candles = dbManager.getCandles(50);
-        if (!candles.isEmpty()) {
-            double[] input = getLatestInput(candles.get(0));
-            double prediction = neuralNetwork.predict(input);
-            webSocketHandler.broadcastPrediction(prediction);
-            predictionController.updatePrediction(prediction);
-            System.out.println("Predicted price: " + prediction);
-        }
-    }
-
-    private double[] getLatestInput(Candle latestCandle) {
-        try (var conn = dbManager.getConnection();
-             var stmt = conn.prepareStatement("SELECT sma, rsi, stochastic_k, stochastic_d FROM indicators WHERE timestamp = ?")) {
-            stmt.setLong(1, latestCandle.getTimestamp());
-            ResultSet rs = stmt.executeQuery();
-            double sma = rs.next() ? rs.getDouble("sma") : 0.0;
-            double rsi = rs.getDouble("rsi");
-            double stochasticK = rs.getDouble("stochastic_k");
-            double stochasticD = rs.getDouble("stochastic_d");
-            double imbalanceInfluence = imbalanceZones.getImbalanceInfluence(latestCandle.getClose());
-            double liquidationInfluence = getLiquidationInfluence(latestCandle.getTimestamp());
-
-            return new double[]{
-                    latestCandle.getOpen(), latestCandle.getHigh(), latestCandle.getLow(), latestCandle.getClose(),
-                    latestCandle.getVolume(), sma, rsi, stochasticK, stochasticD, imbalanceInfluence + liquidationInfluence
-            };
-        } catch (SQLException e) {
-            e.printStackTrace();
-            return new double[10];
-        }
-    }
-
-    private double getLiquidationInfluence(long timestamp) {
-        try (var conn = dbManager.getConnection();
-             var stmt = conn.prepareStatement(
-                     "SELECT SUM(CASE WHEN side = 'long' THEN qty ELSE 0 END) as long_qty, " +
-                             "SUM(CASE WHEN side = 'short' THEN qty ELSE 0 END) as short_qty " +
-                             "FROM liquidations WHERE timestamp > ? AND timestamp <= ?")) {
-            stmt.setLong(1, timestamp - 15 * 60 * 1000);
-            stmt.setLong(2, timestamp);
-            ResultSet rs = stmt.executeQuery();
-            if (rs.next()) {
-                double longQty = rs.getDouble("long_qty");
-                double shortQty = rs.getDouble("short_qty");
-                double maxQty = Math.max(getMaxLiquidationQty(), 1.0);
-                return (longQty - shortQty) / maxQty;
-            }
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
-        return 0.0;
-    }
-
-    private double getMaxLiquidationQty() {
-        try (var conn = dbManager.getConnection();
-             var stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(
-                     "SELECT MAX(qty) FROM liquidations WHERE timestamp > " + (System.currentTimeMillis() - Constants.TRAINING_PERIOD * 15 * 60 * 1000))) {
-            return rs.next() ? rs.getDouble(1) : 1.0;
-        } catch (SQLException e) {
-            e.printStackTrace();
-            return 1.0;
-        }
+    @OnError
+    public void onError(Session session, Throwable throwable) {
+        System.err.println("WebSocket error: " + throwable.getMessage());
+        throwable.printStackTrace();
     }
 }

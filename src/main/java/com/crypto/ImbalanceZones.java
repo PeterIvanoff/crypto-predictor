@@ -1,9 +1,12 @@
 package com.crypto;
 
+import org.springframework.stereotype.Component;
+
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.List;
 
+@Component
 public class ImbalanceZones {
     private final DatabaseManager dbManager;
 

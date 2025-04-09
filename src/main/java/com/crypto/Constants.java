@@ -4,7 +4,7 @@ public class Constants {
     public static final String BYBIT_API_URL = "https://api.bybit.com";
     public static final String BYBIT_WS_URL = "wss://stream.bybit.com/v5/public/linear";
     public static final String CURRENCY_PAIR = "ETHUSDT";
-    public static final String TIMEFRAME = "15";
+    public static final String TIMEFRAME = "1";
     public static final int TRAINING_PERIOD = 1000;
     public static final int WS_PING_INTERVAL = 30;
     public static final int SMA_PERIOD = 14;
@@ -12,5 +12,5 @@ public class Constants {
     public static final int STOCHASTIC_K_PERIOD = 14;
     public static final int STOCHASTIC_K_SMOOTHING = 3;
     public static final int STOCHASTIC_D_SMOOTHING = 3;
-    public static final long PREDICTION_INTERVAL = 15 * 60 * 1000; // 15 минут в миллисекундах
+    public static final long PREDICTION_INTERVAL = 2 * 60 * 1000; // 15 минут в миллисекундах
 }

@@ -1,5 +1,6 @@
 package com.crypto;
 
+import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -11,6 +12,7 @@ import java.util.HashSet;
 import java.util.Set;
 import org.json.JSONObject;
 
+@Component
 public class PredictionWebSocketHandler extends TextWebSocketHandler {
     private final Set<WebSocketSession> sessions = Collections.synchronizedSet(new HashSet<>());
     private double latestPrediction = 0.0;
