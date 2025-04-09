@@ -1,6 +1,7 @@
 package com.crypto;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.scene.Scene;
 import javafx.scene.chart.BarChart;
 import javafx.scene.chart.CategoryAxis;
@@ -12,6 +13,7 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.Stage;
 
+import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -57,7 +59,7 @@ public class Main extends Application {
         primaryStage.show();
 
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleAtFixedRate(this::updateCharts, 0, 15, TimeUnit.MINUTES);
+        executor.scheduleAtFixedRate(() -> Platform.runLater(this::updateCharts), 0, 15, TimeUnit.MINUTES);
     }
 
     private LineChart<String, Number> createCandleChart() {
@@ -85,7 +87,7 @@ public class Main extends Application {
 
     private void updateCandleChart(LineChart<String, Number> chart) {
         chart.getData().clear();
-        List<Candle> candles = dbManager.getCandles(50); // Последние 50 свечей для отображения
+        List<Candle> candles = dbManager.getCandles(50);
         if (candles.isEmpty()) return;
 
         XYChart.Series<String, Number> closeSeries = new XYChart.Series<>();
@@ -104,11 +106,13 @@ public class Main extends Application {
         chart.getData().add(closeSeries);
 
         double movement = Math.abs(predictedPrice - lastClose) / lastClose;
-        if (movement > 0.02) { // Уведомление при движении > 2%
-            Alert alert = new Alert(Alert.AlertType.INFORMATION);
-            alert.setTitle("Price Movement Alert");
-            alert.setContentText("Predicted price change: " + String.format("%.2f%%", movement * 100));
-            alert.show();
+        if (movement > 0.02) {
+            Platform.runLater(() -> {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setTitle("Price Movement Alert");
+                alert.setContentText("Predicted price change: " + String.format("%.2f%%", movement * 100));
+                alert.show();
+            });
         }
     }
 
@@ -128,7 +132,7 @@ public class Main extends Application {
                 if (rs.getString("side").equals("long")) {
                     longSeries.getData().add(new XYChart.Data<>(time, qty));
                 } else {
-                    shortSeries.getData().add(new XYChart.Data<>(time, -qty)); // Шорты ниже нуля
+                    shortSeries.getData().add(new XYChart.Data<>(time, -qty));
                 }
             }
             chart.getData().addAll(longSeries, shortSeries);

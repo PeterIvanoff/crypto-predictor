@@ -87,7 +87,7 @@ public class BybitClient {
     @OnMessage
     public void onMessage(String message) {
         JSONObject json = new JSONObject(message);
-        if (json.has("data")) {
+        if (json.has("data") && json.getJSONObject("data").has("ts")) {
             JSONObject data = json.getJSONObject("data");
             long timestamp = data.getLong("ts");
             String side = data.getString("side").equals("Buy") ? "short" : "long";
