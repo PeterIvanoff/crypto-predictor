@@ -19,6 +19,7 @@ public class BybitClient {
     private Session wsSession;
     private final Indicators indicators;
     private final ImbalanceZones imbalanceZones;
+    private ScheduledExecutorService pingExecutor;
 
     public BybitClient(DatabaseManager dbManager) {
         this.dbManager = dbManager;
@@ -72,9 +73,9 @@ public class BybitClient {
 
             wsSession.getAsyncRemote().sendText("{\"op\": \"subscribe\", \"args\": [\"liquidation." + Constants.CURRENCY_PAIR + "\"]}");
 
-            ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
-            executor.scheduleAtFixedRate(() -> {
-                if (wsSession.isOpen()) {
+            pingExecutor = Executors.newSingleThreadScheduledExecutor();
+            pingExecutor.scheduleAtFixedRate(() -> {
+                if (wsSession != null && wsSession.isOpen()) {
                     wsSession.getAsyncRemote().sendText("{\"op\": \"ping\"}");
                 }
             }, 0, Constants.WS_PING_INTERVAL, TimeUnit.SECONDS);
@@ -117,6 +118,20 @@ public class BybitClient {
             connectWebSocket();
         } catch (InterruptedException e) {
             e.printStackTrace();
+        }
+    }
+
+    public void closeWebSocket() {
+        if (pingExecutor != null && !pingExecutor.isShutdown()) {
+            pingExecutor.shutdownNow();
+        }
+        if (wsSession != null && wsSession.isOpen()) {
+            try {
+                wsSession.close();
+                System.out.println("WebSocket closed manually.");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
         }
     }
 }

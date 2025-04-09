@@ -17,10 +17,15 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import javafx.scene.chart.XYChart;
+import javafx.scene.shape.Rectangle;
+import javafx.scene.paint.Color;
 
 public class Main extends Application {
     private DatabaseManager dbManager;
@@ -30,6 +35,7 @@ public class Main extends Application {
     private NeuralNetwork neuralNetwork;
     private LineChart<String, Number> candleChart;
     private BarChart<String, Number> liquidationChart;
+    private ScheduledExecutorService executor;
 
     @Override
     public void start(Stage primaryStage) {
@@ -58,17 +64,13 @@ public class Main extends Application {
         primaryStage.setScene(scene);
         primaryStage.show();
 
-        ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
+        executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleAtFixedRate(() -> Platform.runLater(this::updateCharts), 0, 15, TimeUnit.MINUTES);
-    }
 
-    private LineChart<String, Number> createCandleChart() {
-        CategoryAxis xAxis = new CategoryAxis();
-        NumberAxis yAxis = new NumberAxis();
-        LineChart<String, Number> chart = new LineChart<>(xAxis, yAxis);
-        chart.setTitle("Candlestick Chart with Imbalance Zones");
-        updateCandleChart(chart);
-        return chart;
+        // Обработчик закрытия окна
+        primaryStage.setOnCloseRequest(event -> {
+            shutdown();
+        });
     }
 
     private BarChart<String, Number> createLiquidationChart() {
@@ -85,49 +87,19 @@ public class Main extends Application {
         updateLiquidationChart(liquidationChart);
     }
 
-    private void updateCandleChart(LineChart<String, Number> chart) {
+       private void updateLiquidationChart(BarChart<String, Number> chart) {
         chart.getData().clear();
-        List<Candle> candles = dbManager.getCandles(50);
-        if (candles.isEmpty()) return;
-
-        XYChart.Series<String, Number> closeSeries = new XYChart.Series<>();
-        closeSeries.setName("Close Price");
-
-        double lastClose = candles.get(0).getClose();
-        for (Candle candle : candles) {
-            String time = String.valueOf(candle.getTimestamp());
-            closeSeries.getData().add(new XYChart.Data<>(time, candle.getClose()));
-        }
-
-        double[] input = getLatestInput(candles.get(0));
-        double predictedPrice = neuralNetwork.predict(input);
-        closeSeries.getData().add(new XYChart.Data<>(String.valueOf(System.currentTimeMillis()), predictedPrice));
-
-        chart.getData().add(closeSeries);
-
-        double movement = Math.abs(predictedPrice - lastClose) / lastClose;
-        if (movement > 0.02) {
-            Platform.runLater(() -> {
-                Alert alert = new Alert(Alert.AlertType.INFORMATION);
-                alert.setTitle("Price Movement Alert");
-                alert.setContentText("Predicted price change: " + String.format("%.2f%%", movement * 100));
-                alert.show();
-            });
-        }
-    }
-
-    private void updateLiquidationChart(BarChart<String, Number> chart) {
-        chart.getData().clear();
-        try (var conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
              var stmt = conn.createStatement();
-             var rs = stmt.executeQuery("SELECT timestamp, side, qty FROM liquidations ORDER BY timestamp DESC LIMIT 50")) {
+             ResultSet rs = stmt.executeQuery("SELECT timestamp, side, qty FROM liquidations ORDER BY timestamp DESC LIMIT 50")) {
             XYChart.Series<String, Number> longSeries = new XYChart.Series<>();
             longSeries.setName("Long Liquidations");
             XYChart.Series<String, Number> shortSeries = new XYChart.Series<>();
             shortSeries.setName("Short Liquidations");
 
+            SimpleDateFormat sdf = new SimpleDateFormat("dd-MM-yyyy HH:mm");
             while (rs.next()) {
-                String time = String.valueOf(rs.getLong("timestamp"));
+                String time = sdf.format(new Date(rs.getLong("timestamp")));
                 double qty = rs.getDouble("qty");
                 if (rs.getString("side").equals("long")) {
                     longSeries.getData().add(new XYChart.Data<>(time, qty));
@@ -142,7 +114,7 @@ public class Main extends Application {
     }
 
     private double[] getLatestInput(Candle latestCandle) {
-        try (var conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
              var stmt = conn.prepareStatement("SELECT sma, rsi, stochastic_k, stochastic_d FROM indicators WHERE timestamp = ?")) {
             stmt.setLong(1, latestCandle.getTimestamp());
             ResultSet rs = stmt.executeQuery();
@@ -164,7 +136,7 @@ public class Main extends Application {
     }
 
     private double getLiquidationInfluence(long timestamp) {
-        try (var conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
              var stmt = conn.prepareStatement(
                      "SELECT SUM(CASE WHEN side = 'long' THEN qty ELSE 0 END) as long_qty, " +
                              "SUM(CASE WHEN side = 'short' THEN qty ELSE 0 END) as short_qty " +
@@ -185,7 +157,7 @@ public class Main extends Application {
     }
 
     private double getMaxLiquidationQty() {
-        try (var conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
+        try (Connection conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
              var stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
                      "SELECT MAX(qty) FROM liquidations WHERE timestamp > " + (System.currentTimeMillis() - Constants.TRAINING_PERIOD * 15 * 60 * 1000))) {
@@ -194,6 +166,81 @@ public class Main extends Application {
             e.printStackTrace();
             return 1.0;
         }
+    }
+    private XYChart<String, Number> createCandleChart() {
+        CategoryAxis xAxis = new CategoryAxis();
+        NumberAxis yAxis = new NumberAxis();
+        XYChart<String, Number> chart = new LineChart<>(xAxis, yAxis); // Пока оставим LineChart как основу
+        chart.setTitle("Candlestick Chart with Imbalance Zones");
+        chart.setAnimated(false); // Отключаем анимацию для точности
+        updateCandleChart(chart);
+        return chart;
+    }
+
+    private void updateCandleChart(XYChart<String, Number> chart) {
+        chart.getData().clear();
+        List<Candle> candles = dbManager.getCandles(50);
+        if (candles.isEmpty()) return;
+
+        XYChart.Series<String, Number> candleSeries = new XYChart.Series<>();
+        candleSeries.setName("Candles");
+
+        SimpleDateFormat sdf = new SimpleDateFormat("dd-MM-yyyy HH:mm");
+        double lastClose = candles.get(0).getClose();
+
+        for (Candle candle : candles) {
+            String time = sdf.format(new Date(candle.getTimestamp()));
+            double open = candle.getOpen();
+            double high = candle.getHigh();
+            double low = candle.getLow();
+            double close = candle.getClose();
+
+            // Создаём свечу как кастомный объект
+            XYChart.Data<String, Number> data = new XYChart.Data<>(time, high);
+            Rectangle body = new Rectangle(8, Math.abs(open - close)); // Ширина свечи и высота тела
+            body.setFill(close >= open ? Color.GREEN : Color.RED);
+            body.setX(-4); // Центрируем относительно оси
+            body.setY(close >= open ? close : open); // Позиция тела
+
+            // Линия для фитиля (high-low)
+            Rectangle wick = new Rectangle(1, high - low);
+            wick.setFill(Color.BLACK);
+            wick.setX(-0.5);
+            wick.setY(low);
+
+            data.setNode(new VBox(wick, body));
+            candleSeries.getData().add(data);
+        }
+
+        // Предсказанная цена (пока как точка)
+        double[] input = getLatestInput(candles.get(0));
+        double predictedPrice = neuralNetwork.predict(input);
+        XYChart.Series<String, Number> predictedSeries = new XYChart.Series<>();
+        predictedSeries.setName("Predicted Price");
+        predictedSeries.getData().add(new XYChart.Data<>(sdf.format(new Date(System.currentTimeMillis())), predictedPrice));
+
+        chart.getData().addAll(candleSeries, predictedSeries);
+
+        double movement = Math.abs(predictedPrice - lastClose) / lastClose;
+        if (movement > 0.02) {
+            Platform.runLater(() -> {
+                Alert alert = new Alert(Alert.AlertType.INFORMATION);
+                alert.setTitle("Price Movement Alert");
+                alert.setContentText("Predicted price change: " + String.format("%.2f%%", movement * 100));
+                alert.show();
+            });
+        }
+    }
+
+
+    private void shutdown() {
+        System.out.println("Shutting down...");
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdownNow();
+        }
+        bybitClient.closeWebSocket();
+        Platform.exit();
+        System.exit(0);
     }
 
     public static void main(String[] args) {
