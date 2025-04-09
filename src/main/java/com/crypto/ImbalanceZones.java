@@ -1,6 +1,7 @@
 package com.crypto;
 
-import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.List;
 
 public class ImbalanceZones {
@@ -11,38 +12,33 @@ public class ImbalanceZones {
     }
 
     public void calculateAndSaveZones() {
-        List<Candle> candles = dbManager.getCandles(Constants.TRAINING_PERIOD);
-        if (candles.size() < 2) return;
+        List<Candle> candles = dbManager.getCandles(50);
+        if (candles.isEmpty()) return;
 
-        double avgVolume = candles.stream().mapToDouble(Candle::getVolume).average().orElse(0.0);
-
-        for (int i = 1; i < candles.size(); i++) {
-            Candle current = candles.get(i);
-            Candle previous = candles.get(i - 1);
-            double gap = Math.abs(current.getOpen() - previous.getClose());
-            if (gap > 0 && current.getVolume() > avgVolume * 1.5) {
-                double priceLevel = (current.getHigh() + current.getLow()) / 2;
-                double strength = Math.min(1.0, gap / current.getClose());
-                dbManager.saveImbalanceZone(current.getTimestamp(), priceLevel, strength);
+        for (Candle candle : candles) {
+            double volumeThreshold = 1000; // Пример порога, можно вынести в Constants
+            if (candle.getVolume() > volumeThreshold) {
+                dbManager.saveImbalanceZone(candle.getTimestamp(), candle.getClose(), candle.getVolume());
             }
         }
     }
 
     public double getImbalanceInfluence(double currentPrice) {
-        try (var conn = DriverManager.getConnection("jdbc:sqlite:crypto_data.db");
-             var stmt = conn.prepareStatement("SELECT price_level, strength FROM imbalance_zones ORDER BY ABS(price_level - ?) LIMIT 1")) {
-            stmt.setDouble(1, currentPrice);
-            var rs = stmt.executeQuery();
-            if (rs.next()) {
-                double priceLevel = rs.getDouble("price_level");
-                double strength = rs.getDouble("strength");
-                double distance = Math.abs(currentPrice - priceLevel);
-                double maxDistance = currentPrice * 0.05;
-                return strength * (1.0 - Math.min(distance / maxDistance, 1.0));
+        try (var conn = dbManager.getConnection();
+             var stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT price, volume FROM imbalance_zones ORDER BY timestamp DESC LIMIT 10")) {
+            double influence = 0;
+            while (rs.next()) {
+                double price = rs.getDouble("price");
+                double volume = rs.getDouble("volume");
+                double distance = Math.abs(currentPrice - price);
+                influence += volume / (distance + 1); // Простая формула влияния
             }
-        } catch (Exception e) {
+            return influence / 1000; // Нормализация
+        } catch (SQLException e) {
             e.printStackTrace();
+            return 0;
         }
-        return 0.0;
     }
 }

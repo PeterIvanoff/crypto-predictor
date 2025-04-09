@@ -1,5 +1,10 @@
 package com.crypto;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
 
 public class Indicators {
@@ -10,67 +15,63 @@ public class Indicators {
     }
 
     public void calculateAndSaveIndicators() {
-        List<Candle> candles = dbManager.getCandles(Constants.TRAINING_PERIOD);
-        if (candles.size() < Constants.SMA_PERIOD) return;
+        List<Candle> candles = dbManager.getCandles(50);
+        if (candles.size() < Constants.SMA_PERIOD) return; // Минимальный размер для SMA
 
-        for (int i = 0; i < candles.size(); i++) {
-            long timestamp = candles.get(i).getTimestamp();
-            double sma = calculateSMA(candles, i);
-            double rsi = calculateRSI(candles, i);
-            double[] stochastic = calculateStochastic(candles, i);
-            dbManager.saveIndicators(timestamp, sma, rsi, stochastic[0], stochastic[1]);
-        }
+        double sma = calculateSMA(candles, Constants.SMA_PERIOD);
+        double rsi = calculateRSI(candles, Constants.RSI_PERIOD);
+        double[] stochastic = calculateStochastic(candles, Constants.STOCHASTIC_K_PERIOD,
+                Constants.STOCHASTIC_K_SMOOTHING,
+                Constants.STOCHASTIC_D_SMOOTHING);
+
+        long latestTimestamp = candles.get(0).getTimestamp();
+        dbManager.saveIndicators(latestTimestamp, sma, rsi, stochastic[0], stochastic[1]);
     }
 
-    private double calculateSMA(List<Candle> candles, int index) {
-        if (index + Constants.SMA_PERIOD > candles.size()) return 0.0;
-        double sum = 0.0;
-        for (int i = index; i < index + Constants.SMA_PERIOD; i++) {
+    private double calculateSMA(List<Candle> candles, int period) {
+        double sum = 0;
+        for (int i = 0; i < period; i++) {
             sum += candles.get(i).getClose();
         }
-        return sum / Constants.SMA_PERIOD;
+        return sum / period;
     }
 
-    private double calculateRSI(List<Candle> candles, int index) {
-        if (index + Constants.RSI_PERIOD > candles.size()) return 0.0;
-        double gain = 0.0, loss = 0.0;
-        for (int i = index; i < index + Constants.RSI_PERIOD - 1; i++) {
-            double diff = candles.get(i).getClose() - candles.get(i + 1).getClose();
-            if (diff > 0) gain += diff;
-            else loss -= diff;
+    private double calculateRSI(List<Candle> candles, int period) {
+        double gain = 0, loss = 0;
+        for (int i = 0; i < period - 1; i++) {
+            double change = candles.get(i).getClose() - candles.get(i + 1).getClose();
+            if (change > 0) gain += change;
+            else loss -= change;
         }
-        gain /= Constants.RSI_PERIOD;
-        loss /= Constants.RSI_PERIOD;
-        if (loss == 0) return 100.0;
-        double rs = gain / loss;
-        return 100.0 - (100.0 / (1.0 + rs));
+        double avgGain = gain / period;
+        double avgLoss = loss / period;
+        if (avgLoss == 0) return 100;
+        double rs = avgGain / avgLoss;
+        return 100 - (100 / (1 + rs));
     }
 
-    private double[] calculateStochastic(List<Candle> candles, int index) {
-        if (index + Constants.STOCHASTIC_K_PERIOD > candles.size()) return new double[]{0.0, 0.0};
-
-        double highestHigh = candles.get(index).getHigh();
-        double lowestLow = candles.get(index).getLow();
-        for (int i = index; i < index + Constants.STOCHASTIC_K_PERIOD; i++) {
-            highestHigh = Math.max(highestHigh, candles.get(i).getHigh());
-            lowestLow = Math.min(lowestLow, candles.get(i).getLow());
+    private double[] calculateStochastic(List<Candle> candles, int kPeriod, int kSmoothing, int dSmoothing) {
+        double high = candles.get(0).getHigh();
+        double low = candles.get(0).getLow();
+        for (int i = 1; i < kPeriod; i++) {
+            high = Math.max(high, candles.get(i).getHigh());
+            low = Math.min(low, candles.get(i).getLow());
         }
-        double k = (candles.get(index).getClose() - lowestLow) / (highestHigh - lowestLow) * 100;
+        double k = (candles.get(0).getClose() - low) / (high - low) * 100;
 
-        double d = 0.0;
-        int count = 0;
-        for (int i = index; i < index + Constants.STOCHASTIC_D_PERIOD && i < candles.size(); i++) {
-            highestHigh = candles.get(i).getHigh();
-            lowestLow = candles.get(i).getLow();
-            for (int j = i; j < i + Constants.STOCHASTIC_K_PERIOD && j < candles.size(); j++) {
-                highestHigh = Math.max(highestHigh, candles.get(j).getHigh());
-                lowestLow = Math.min(lowestLow, candles.get(j).getLow());
+        List<Double> kValues = new ArrayList<>();
+        kValues.add(k);
+        for (int i = 1; i < kSmoothing; i++) {
+            if (i < candles.size()) {
+                high = Math.max(high, candles.get(i).getHigh());
+                low = Math.min(low, candles.get(i).getLow());
+                k = (candles.get(i).getClose() - low) / (high - low) * 100;
+                kValues.add(k);
             }
-            d += (candles.get(i).getClose() - lowestLow) / (highestHigh - lowestLow) * 100;
-            count++;
         }
-        d /= count;
 
-        return new double[]{k, d};
+        double kSmooth = kValues.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        double d = kSmooth; // Упрощённый D для одного значения
+        return new double[]{kSmooth, d};
     }
 }
