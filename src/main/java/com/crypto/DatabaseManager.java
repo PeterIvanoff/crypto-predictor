@@ -13,6 +13,7 @@ import java.util.List;
 @Component
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:crypto_data.db";
+    private final Object lock = new Object(); // Объект для синхронизации
 
     public DatabaseManager() {
         try (Connection conn = DriverManager.getConnection(DB_URL)) {
@@ -28,7 +29,9 @@ public class DatabaseManager {
             conn.createStatement().execute(
                     "CREATE TABLE IF NOT EXISTS liquidations (" +
                             "timestamp INTEGER, side TEXT, qty REAL)");
+            System.out.println("Database tables initialized.");
         } catch (SQLException e) {
+            System.err.println("Failed to initialize database: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -38,90 +41,115 @@ public class DatabaseManager {
     }
 
     public void saveCandle(long timestamp, double open, double high, double low, double close, double volume) {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT OR REPLACE INTO candles (timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?)")) {
-            stmt.setLong(1, timestamp);
-            stmt.setDouble(2, open);
-            stmt.setDouble(3, high);
-            stmt.setDouble(4, low);
-            stmt.setDouble(5, close);
-            stmt.setDouble(6, volume);
-            int rowsAffected = stmt.executeUpdate();
-            if (rowsAffected > 0) {
-                System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
+        synchronized (lock) {
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT OR REPLACE INTO candles (timestamp, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?)")) {
+                stmt.setLong(1, timestamp);
+                stmt.setDouble(2, open);
+                stmt.setDouble(3, high);
+                stmt.setDouble(4, low);
+                stmt.setDouble(5, close);
+                stmt.setDouble(6, volume);
+                int rowsAffected = stmt.executeUpdate();
+                if (rowsAffected > 0) {
+                   // System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
+                }
+            } catch (SQLException e) {
+                System.err.println("Error saving candle: " + e.getMessage());
+                e.printStackTrace();
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
         }
     }
 
     public void saveLiquidation(long timestamp, String side, double qty) {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT OR REPLACE INTO liquidations (timestamp, side, qty) VALUES (?, ?, ?)")) {
-            stmt.setLong(1, timestamp);
-            stmt.setString(2, side);
-            stmt.setDouble(3, qty);
-            stmt.executeUpdate();
-            System.out.println("Saved liquidation: " + side + " " + qty + " at " + timestamp);
-        } catch (SQLException e) {
-            e.printStackTrace();
+        synchronized (lock) {
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT INTO liquidations (timestamp, side, qty) VALUES (?, ?, ?)")) {
+                stmt.setLong(1, timestamp);
+                stmt.setString(2, side);
+                stmt.setDouble(3, qty);
+                stmt.executeUpdate();
+                System.out.println("Saved liquidation: " + side + " " + qty + " at " + timestamp);
+            } catch (SQLException e) {
+                System.err.println("Error saving liquidation: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
     }
 
     public void saveIndicators(long timestamp, double sma, double rsi, double stochasticK, double stochasticD) {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT OR IGNORE INTO indicators (timestamp, sma, rsi, stochastic_k, stochastic_d) VALUES (?, ?, ?, ?, ?)")) {
-            stmt.setLong(1, timestamp);
-            stmt.setDouble(2, sma);
-            stmt.setDouble(3, rsi);
-            stmt.setDouble(4, stochasticK);
-            stmt.setDouble(5, stochasticD);
-            stmt.executeUpdate();
-        } catch (SQLException e) {
-            e.printStackTrace();
+        synchronized (lock) {
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT OR REPLACE INTO indicators (timestamp, sma, rsi, stochastic_k, stochastic_d) VALUES (?, ?, ?, ?, ?)")) {
+                stmt.setLong(1, timestamp);
+                stmt.setDouble(2, sma);
+                stmt.setDouble(3, rsi);
+                stmt.setDouble(4, stochasticK);
+                stmt.setDouble(5, stochasticD);
+                int rowsAffected = stmt.executeUpdate();
+                if (rowsAffected > 0) {
+                   // System.out.println("Saved indicators: timestamp=" + timestamp + ", sma=" + sma);
+                }
+            } catch (SQLException e) {
+                System.err.println("Error saving indicators: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
     }
 
     public void saveImbalanceZone(long timestamp, double price, double volume) {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "INSERT OR IGNORE INTO imbalance_zones (timestamp, price, volume) VALUES (?, ?, ?)")) {
-            stmt.setLong(1, timestamp);
-            stmt.setDouble(2, price);
-            stmt.setDouble(3, volume);
-            stmt.executeUpdate();
-        } catch (SQLException e) {
-            e.printStackTrace();
+        synchronized (lock) {
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT OR REPLACE INTO imbalance_zones (timestamp, price, volume) VALUES (?, ?, ?)")) {
+                stmt.setLong(1, timestamp);
+                stmt.setDouble(2, price);
+                stmt.setDouble(3, volume);
+                int rowsAffected = stmt.executeUpdate();
+                if (rowsAffected > 0) {
+                   // System.out.println("Saved imbalance zone: timestamp=" + timestamp + ", price=" + price);
+                }
+            } catch (SQLException e) {
+                System.err.println("Error saving imbalance zone: " + e.getMessage());
+                e.printStackTrace();
+            }
         }
     }
 
     public List<Candle> getCandles(int limit) {
-        List<Candle> candles = new ArrayList<>();
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT timestamp, open, high, low, close, volume FROM candles ORDER BY timestamp DESC LIMIT ?")) {
-            stmt.setInt(1, limit);
-            ResultSet rs = stmt.executeQuery();
-            while (rs.next()) {
-                candles.add(new Candle(rs.getLong("timestamp"), rs.getDouble("open"), rs.getDouble("high"),
-                        rs.getDouble("low"), rs.getDouble("close"), rs.getDouble("volume")));
+        synchronized (lock) {
+            List<Candle> candles = new ArrayList<>();
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "SELECT timestamp, open, high, low, close, volume FROM candles ORDER BY timestamp DESC LIMIT ?")) {
+                stmt.setInt(1, limit);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        candles.add(new Candle(rs.getLong("timestamp"), rs.getDouble("open"), rs.getDouble("high"),
+                                rs.getDouble("low"), rs.getDouble("close"), rs.getDouble("volume")));
+                    }
+                }
+            } catch (SQLException e) {
+                System.err.println("Error retrieving candles: " + e.getMessage());
+                e.printStackTrace();
             }
-        } catch (SQLException e) {
-            e.printStackTrace();
+            return candles;
         }
-        return candles;
     }
 
     public long getLastCandleTimestamp() {
-        try (Connection conn = getConnection();
-             ResultSet rs = conn.createStatement().executeQuery("SELECT MAX(timestamp) FROM candles")) {
-            return rs.next() ? rs.getLong(1) : 0;
-        } catch (SQLException e) {
-            e.printStackTrace();
-            return 0;
+        synchronized (lock) {
+            try (Connection conn = getConnection();
+                 ResultSet rs = conn.createStatement().executeQuery("SELECT MAX(timestamp) FROM candles")) {
+                return rs.next() ? rs.getLong(1) : 0;
+            } catch (SQLException e) {
+                System.err.println("Error retrieving last candle timestamp: " + e.getMessage());
+                e.printStackTrace();
+                return 0;
+            }
         }
     }
 }

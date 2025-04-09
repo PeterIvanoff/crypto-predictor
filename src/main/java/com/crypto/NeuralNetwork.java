@@ -1,5 +1,6 @@
 package com.crypto;
 
+import jakarta.annotation.PostConstruct;
 import org.deeplearning4j.nn.conf.MultiLayerConfiguration;
 import org.deeplearning4j.nn.conf.NeuralNetConfiguration;
 import org.deeplearning4j.nn.conf.layers.DenseLayer;
@@ -10,11 +11,11 @@ import org.nd4j.linalg.api.ndarray.INDArray;
 import org.nd4j.linalg.factory.Nd4j;
 import org.nd4j.linalg.learning.config.Adam;
 import org.nd4j.linalg.lossfunctions.LossFunctions;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.List;
 
 @Component
@@ -30,7 +31,6 @@ public class NeuralNetwork {
         this.indicators = indicators;
         this.imbalanceZones = imbalanceZones;
         initializeModel();
-        trainModel();
     }
 
     private void initializeModel() {
@@ -48,8 +48,12 @@ public class NeuralNetwork {
         model.init();
     }
 
-    @Scheduled(fixedRate = Constants.PREDICTION_INTERVAL)
-    private void trainModel() {
+    @PostConstruct
+    public void init() {
+        trainModel();
+    }
+
+    public void trainModel() {
         List<Candle> candles = dbManager.getCandles(Constants.TRAINING_PERIOD);
         System.out.println("Candles retrieved for training: " + candles.size());
         if (candles.size() < 50) {
@@ -72,10 +76,10 @@ public class NeuralNetwork {
         inputs.divi(maxPrice);
         outputs.divi(maxPrice);
 
-        int epochs = 100;
+        int epochs = 10; // Уменьшено для скорости
         for (int epoch = 0; epoch < epochs; epoch++) {
             model.fit(inputs, outputs);
-            if (epoch % 10 == 0) {
+            if (epoch % 5 == 0) {
                 System.out.println("Epoch " + epoch + " completed");
             }
         }
@@ -83,6 +87,10 @@ public class NeuralNetwork {
     }
 
     public double predict(double[] input) {
+        if (input == null || input.length != 10) {
+            System.out.println("Invalid input for prediction: " + Arrays.toString(input));
+            return 0.0;
+        }
         INDArray inputArray = Nd4j.create(input, new int[]{1, 10});
         inputArray.divi(maxPrice);
         INDArray output = model.output(inputArray);
@@ -91,7 +99,7 @@ public class NeuralNetwork {
         return predictedPrice;
     }
 
-    private double[] getInputForCandle(Candle candle) {
+    public double[] getInputForCandle(Candle candle) { // Сделан публичным
         try (var conn = dbManager.getConnection();
              var stmt = conn.prepareStatement("SELECT sma, rsi, stochastic_k, stochastic_d FROM indicators WHERE timestamp = ?")) {
             stmt.setLong(1, candle.getTimestamp());
@@ -107,10 +115,10 @@ public class NeuralNetwork {
                     candle.getOpen(), candle.getHigh(), candle.getLow(), candle.getClose(),
                     candle.getVolume(), sma, rsi, stochasticK, stochasticD, imbalanceInfluence + liquidationInfluence
             };
-            System.out.println("Input for candle: " +
-                    "Open=" + input[0] + ", High=" + input[1] + ", Low=" + input[2] + ", Close=" + input[3] +
-                    ", Volume=" + input[4] + ", SMA=" + input[5] + ", RSI=" + input[6] +
-                    ", StochK=" + input[7] + ", StochD=" + input[8] + ", Influence=" + input[9]);
+//            System.out.println("Input for candle: " +
+//                    "Open=" + input[0] + ", High=" + input[1] + ", Low=" + input[2] + ", Close=" + input[3] +
+//                    ", Volume=" + input[4] + ", SMA=" + input[5] + ", RSI=" + input[6] +
+//                    ", StochK=" + input[7] + ", StochD=" + input[8] + ", Influence=" + input[9]);
             return input;
         } catch (SQLException e) {
             e.printStackTrace();

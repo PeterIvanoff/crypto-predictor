@@ -27,6 +27,7 @@ public class BybitClient {
     private final PredictionController predictionController;
 
     private Session webSocketSession;
+    private volatile boolean historicalDataLoaded = false; // Флаг загрузки исторических данных
 
     public BybitClient(DatabaseManager dbManager, Indicators indicators, ImbalanceZones imbalanceZones,
                        NeuralNetwork neuralNetwork, PredictionWebSocketHandler webSocketHandler,
@@ -41,12 +42,11 @@ public class BybitClient {
 
     @PostConstruct
     public void init() {
+        loadHistoricalData(); // Сначала загружаем исторические данные
+        historicalDataLoaded = true; // Устанавливаем флаг после завершения
         connectWebSocket();
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleAtFixedRate(this::sendPing, 20, 20, TimeUnit.SECONDS);
-        loadHistoricalData();
-        indicators.calculateAndSaveIndicators(); // Из предыдущего исправления
-        imbalanceZones.calculateAndSaveZones();  // Добавляем вызов
     }
 
     private void sendPing() {
@@ -103,7 +103,7 @@ public class BybitClient {
                     double volume = candle.getDouble(5);
                     dbManager.saveCandle(timestamp, open, high, low, close, volume);
                     totalCandlesLoaded++;
-                    System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
+                    //System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
                 }
                 System.out.println("Unique timestamps in this batch: " + uniqueTimestamps.size());
                 System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
@@ -115,6 +115,11 @@ public class BybitClient {
             }
         }
         System.out.println("Total loaded " + totalCandlesLoaded + " candles into database.");
+
+        // Инициализация индикаторов, зон и модели после загрузки
+        indicators.calculateAndSaveIndicators();
+        imbalanceZones.calculateAndSaveZones();
+        neuralNetwork.trainModel();
     }
 
     private void connectWebSocket() {
@@ -135,24 +140,76 @@ public class BybitClient {
         }
     }
 
+    private void subscribeToCandles() {
+        if (webSocketSession != null && webSocketSession.isOpen()) {
+            String subscriptionMessage = "{\"op\":\"subscribe\",\"args\":[\"kline." + Constants.TIMEFRAME + "." + Constants.CURRENCY_PAIR + "\"]}";
+            webSocketSession.getAsyncRemote().sendText(subscriptionMessage);
+            System.out.println("Subscribed to kline." + Constants.TIMEFRAME + "." + Constants.CURRENCY_PAIR);
+        }
+    }
+
     @OnOpen
     public void onOpen(Session session) {
         this.webSocketSession = session;
         System.out.println("WebSocket session opened.");
         subscribeToLiquidations();
+        subscribeToCandles();
     }
 
     @OnMessage
     public void onMessage(String message) {
-        System.out.println("WebSocket raw message: " + message);
-        JSONObject json = new JSONObject(message);
-        if (json.has("data") && json.getJSONObject("data").has("ts")) {
-            JSONObject data = json.getJSONObject("data");
-            long timestamp = data.getLong("ts");
-            String side = data.getString("side").equals("Buy") ? "short" : "long";
-            double qty = data.getDouble("size");
-            dbManager.saveLiquidation(timestamp, side, qty);
-            System.out.println("Liquidation: " + side + " " + qty + " at " + timestamp);
+        //System.out.println("WebSocket raw message: " + message);
+        try {
+            JSONObject json = new JSONObject(message);
+
+            // Обработка ликвидаций
+            if (json.has("topic") && json.getString("topic").startsWith("liquidation")) {
+                JSONObject data = json.getJSONObject("data");
+                long timestamp = data.getLong("ts");
+                String side = data.getString("side").equals("Buy") ? "short" : "long";
+                double qty = data.getDouble("size");
+                dbManager.saveLiquidation(timestamp, side, qty);
+                System.out.println("Liquidation: " + side + " " + qty + " at " + timestamp);
+            }
+
+            // Обработка свечей только после полной загрузки исторических данных
+            if (historicalDataLoaded && json.has("topic") && json.getString("topic").startsWith("kline")) {
+                JSONArray dataArray = json.getJSONArray("data");
+                if (dataArray.length() > 0) {
+                    JSONObject data = dataArray.getJSONObject(0);
+
+                    Boolean confirm = data.getBoolean("confirm");
+                    if (confirm) {
+                        long timestamp = data.getLong("start");
+                        double open = data.getDouble("open");
+                        double high = data.getDouble("high");
+                        double low = data.getDouble("low");
+                        double close = data.getDouble("close");
+                        double volume = data.getDouble("volume");
+                        dbManager.saveCandle(timestamp, open, high, low, close, volume);
+                        System.out.println("New candle received: timestamp=" + timestamp + ", close=" + close + ", volume=" + volume);
+
+                        Candle currentCandle = new Candle(timestamp, open, high, low, close, volume);
+
+                        // Пересчёт индикаторов и зон
+                        indicators.calculateAndSaveIndicators();
+                        imbalanceZones.calculateAndSaveZones();
+
+                        // Переобучение модели
+                        neuralNetwork.trainModel();
+
+                        // Предсказание
+                        double[] input = neuralNetwork.getInputForCandle(currentCandle);
+                        double predictedPrice = neuralNetwork.predict(input);
+                        webSocketHandler.broadcastPrediction(predictedPrice);
+                    }
+                } else {
+                    System.out.println("Received kline message with empty data array");
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error processing WebSocket message: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -160,6 +217,7 @@ public class BybitClient {
     public void onClose(Session session, CloseReason reason) {
         this.webSocketSession = null;
         System.out.println("WebSocket closed: " + reason.getReasonPhrase());
+        connectWebSocket(); // Переподключение
     }
 
     @OnError

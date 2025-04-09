@@ -39,7 +39,7 @@ public class Indicators {
 
             long timestamp = subList.get(0).getTimestamp();
             dbManager.saveIndicators(timestamp, sma, rsi, stochastic[0], stochastic[1]);
-            System.out.println("Calculated indicators for timestamp " + timestamp + ": SMA=" + sma + ", RSI=" + rsi + ", K=" + stochastic[0] + ", D=" + stochastic[1]);
+            //System.out.println("Calculated indicators for timestamp " + timestamp + ": SMA=" + sma + ", RSI=" + rsi + ", K=" + stochastic[0] + ", D=" + stochastic[1]);
         }
     }
 

@@ -26,13 +26,13 @@ public class ImbalanceZones {
         double totalVolume = candles.stream().mapToDouble(Candle::getVolume).sum();
         double avgVolume = totalVolume / candles.size();
         double volumeThreshold = avgVolume * 2; // Порог — в 2 раза выше среднего
-        System.out.println("Calculated volume threshold: " + volumeThreshold);
+        //System.out.println("Calculated volume threshold: " + volumeThreshold);
 
         for (Candle candle : candles) {
             if (candle.getVolume() > volumeThreshold) {
                 dbManager.saveImbalanceZone(candle.getTimestamp(), candle.getClose(), candle.getVolume());
-                System.out.println("Saved imbalance zone: timestamp=" + candle.getTimestamp() +
-                        ", price=" + candle.getClose() + ", volume=" + candle.getVolume());
+//                System.out.println("Saved imbalance zone: timestamp=" + candle.getTimestamp() +
+//                        ", price=" + candle.getClose() + ", volume=" + candle.getVolume());
             }
         }
         System.out.println("Finished calculating and saving imbalance zones.");
@@ -57,7 +57,7 @@ public class ImbalanceZones {
                 return 0;
             }
             double normalizedInfluence = influence / 1000;
-            System.out.println("Calculated imbalance influence: " + normalizedInfluence + " for price=" + currentPrice);
+            //System.out.println("Calculated imbalance influence: " + normalizedInfluence + " for price=" + currentPrice);
             return normalizedInfluence;
         } catch (SQLException e) {
             System.err.println("Error calculating imbalance influence: " + e.getMessage());
