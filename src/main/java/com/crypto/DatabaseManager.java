@@ -14,7 +14,6 @@ public class DatabaseManager {
     private void initializeDatabase() {
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement()) {
-            // Таблица свечей
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS candles (
                     timestamp INTEGER PRIMARY KEY,
@@ -25,7 +24,6 @@ public class DatabaseManager {
                     volume REAL
                 )
             """);
-            // Таблица индикаторов
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS indicators (
                     timestamp INTEGER PRIMARY KEY,
@@ -35,7 +33,6 @@ public class DatabaseManager {
                     stochastic_d REAL
                 )
             """);
-            // Таблица ликвидаций
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS liquidations (
                     timestamp INTEGER,
@@ -43,7 +40,6 @@ public class DatabaseManager {
                     qty REAL
                 )
             """);
-            // Таблица зон имбаланса
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS imbalance_zones (
                     timestamp INTEGER,
