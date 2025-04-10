@@ -8,7 +8,6 @@ import org.springframework.context.ApplicationContext;
 public class Main {
     public static void main(String[] args) {
         ApplicationContext context = SpringApplication.run(Main.class, args);
-        BybitClient client = context.getBean(BybitClient.class);
-        client.loadHistoricalData();
+        // Убираем явный вызов loadHistoricalData(), он уже выполняется в BybitClient.init()
     }
 }

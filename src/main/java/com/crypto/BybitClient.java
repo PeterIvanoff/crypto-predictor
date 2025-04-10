@@ -10,8 +10,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.HashSet;
-import java.util.Set;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,7 +29,7 @@ public class BybitClient {
     private final PredictionController predictionController;
 
     private Session webSocketSession;
-    private volatile boolean historicalDataLoaded = false; // Флаг загрузки исторических данных
+    private volatile boolean initialDataLoaded = false;
 
     public BybitClient(DatabaseManager dbManager, Indicators indicators, ImbalanceZones imbalanceZones,
                        NeuralNetwork neuralNetwork, PredictionWebSocketHandler webSocketHandler,
@@ -42,8 +44,14 @@ public class BybitClient {
 
     @PostConstruct
     public void init() {
-        loadHistoricalData(); // Сначала загружаем исторические данные
-        historicalDataLoaded = true; // Устанавливаем флаг после завершения
+        loadCandles();
+        indicators.calculateAndSaveIndicators(); // Сначала рассчитываем индикаторы
+        imbalanceZones.calculateAndSaveZones();  // Затем зоны дисбаланса
+        neuralNetwork.trainModel();              // Теперь обучение
+        double predictedPrice = neuralNetwork.getPredictedPrice();
+        webSocketHandler.broadcastPrediction(predictedPrice);
+
+        initialDataLoaded = true;
         connectWebSocket();
         ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();
         executor.scheduleAtFixedRate(this::sendPing, 20, 20, TimeUnit.SECONDS);
@@ -53,74 +61,76 @@ public class BybitClient {
         if (webSocketSession != null && webSocketSession.isOpen()) {
             String pingMessage = "{\"op\":\"ping\"}";
             webSocketSession.getAsyncRemote().sendText(pingMessage);
-            System.out.println("Sent ping to keep WebSocket alive.");
+            //ystem.out.println("Sent ping to keep WebSocket alive.");
         }
     }
 
-    public void loadHistoricalData() {
-        HttpClient client = HttpClient.newHttpClient();
-        int totalCandlesLoaded = 0;
+    private void loadCandles() {
+        long lastTimestamp = dbManager.getLastCandleTimestamp();
         long now = System.currentTimeMillis();
-        long currentStart = now - Constants.TRAINING_PERIOD * 15 * 60 * 1000;
 
-        try (java.sql.Connection conn = dbManager.getConnection();
-             java.sql.PreparedStatement stmt = conn.prepareStatement("DELETE FROM candles")) {
-            stmt.executeUpdate();
-            System.out.println("Cleared candles table before loading new data.");
-        } catch (java.sql.SQLException e) {
-            e.printStackTrace();
+        if (lastTimestamp == 0) {
+            System.out.println("Candles table is empty, loading initial " + Constants.TRAINING_PERIOD + " candles.");
+            loadHistoricalData(now - Constants.TRAINING_PERIOD * getTimeframeMillis(Constants.TIMEFRAME), Constants.TRAINING_PERIOD);
+        } else {
+            System.out.println("Updating candles from last timestamp: " + lastTimestamp);
+            loadHistoricalData(getNextStartTime(lastTimestamp, Constants.TIMEFRAME), -1);
         }
 
-        while (totalCandlesLoaded < Constants.TRAINING_PERIOD) {
-            String url = Constants.BYBIT_API_URL + "/v5/market/kline?category=linear&symbol=" + Constants.CURRENCY_PAIR +
-                    "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&limit=200";
+//        indicators.calculateAndSaveIndicators();
+//        imbalanceZones.calculateAndSaveZones();
+//        neuralNetwork.trainModel();
+    }
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .GET()
-                    .build();
+        private void loadHistoricalData(long startTime, int limit) {
+            HttpClient client = HttpClient.newHttpClient();
+            int totalCandlesLoaded = 0;
+            long currentStart = startTime;
+            long now = System.currentTimeMillis();
 
-            try {
-                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                System.out.println("API Response: " + response.body());
-                JSONObject json = new JSONObject(response.body());
-                JSONArray result = json.getJSONObject("result").getJSONArray("list");
+            while ((limit == -1 && currentStart < now) || (limit > 0 && totalCandlesLoaded < limit)) {
+                String url = Constants.BYBIT_API_URL + "/v5/market/kline?category=linear&symbol=" + Constants.CURRENCY_PAIR +
+                        "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&limit=200";
 
-                if (result.length() == 0) {
-                    System.out.println("No more candles to load at timestamp: " + currentStart);
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .GET()
+                        .build();
+
+                try {
+                    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                    JSONObject json = new JSONObject(response.body());
+                    JSONArray result = json.getJSONObject("result").getJSONArray("list");
+
+                    if (result.length() == 0) {
+                        System.out.println("No more candles to load at timestamp: " + currentStart);
+                        break;
+                    }
+
+                    for (int i = result.length() - 1; i >= 0; i--) {
+                        JSONArray candle = result.getJSONArray(i);
+                        long timestamp = candle.getLong(0);
+                        double open = candle.getDouble(1);
+                        double high = candle.getDouble(2);
+                        double low = candle.getDouble(3);
+                        double close = candle.getDouble(4);
+                        double volume = candle.getDouble(5);
+                        dbManager.saveCandle(timestamp, open, high, low, close, volume);
+                        totalCandlesLoaded++;
+                    }
+                    System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
+
+                    currentStart = getNextStartTime(result.getJSONArray(0).getLong(0) ,
+                            Constants.TIMEFRAME);
+                } catch (Exception e) {
+                    System.err.println("Error loading candles: " + e.getMessage());
+                    e.printStackTrace();
                     break;
                 }
-
-                Set<Long> uniqueTimestamps = new HashSet<>();
-                for (int i = result.length() - 1; i >= 0; i--) {
-                    JSONArray candle = result.getJSONArray(i);
-                    long timestamp = candle.getLong(0);
-                    uniqueTimestamps.add(timestamp);
-                    double open = candle.getDouble(1);
-                    double high = candle.getDouble(2);
-                    double low = candle.getDouble(3);
-                    double close = candle.getDouble(4);
-                    double volume = candle.getDouble(5);
-                    dbManager.saveCandle(timestamp, open, high, low, close, volume);
-                    totalCandlesLoaded++;
-                    //System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
-                }
-                System.out.println("Unique timestamps in this batch: " + uniqueTimestamps.size());
-                System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
-
-                currentStart = result.getJSONArray(0).getLong(0) + 15 * 60 * 1000;
-            } catch (Exception e) {
-                e.printStackTrace();
-                break;
             }
-        }
-        System.out.println("Total loaded " + totalCandlesLoaded + " candles into database.");
 
-        // Инициализация индикаторов, зон и модели после загрузки
-        indicators.calculateAndSaveIndicators();
-        imbalanceZones.calculateAndSaveZones();
-        neuralNetwork.trainModel();
-    }
+        System.out.println("Total loaded " + totalCandlesLoaded + " candles into database.");
+        }
 
     private void connectWebSocket() {
         try {
@@ -162,62 +172,119 @@ public class BybitClient {
         try {
             JSONObject json = new JSONObject(message);
 
-            // Обработка ликвидаций
             if (json.has("topic") && json.getString("topic").startsWith("liquidation")) {
+                long timestamp = json.getLong("ts"); // Исправлено: берем "ts" из верхнего уровня
                 JSONObject data = json.getJSONObject("data");
-                long timestamp = data.getLong("ts");
                 String side = data.getString("side").equals("Buy") ? "short" : "long";
                 double qty = data.getDouble("size");
                 dbManager.saveLiquidation(timestamp, side, qty);
-                System.out.println("Liquidation: " + side + " " + qty + " at " + timestamp);
             }
 
-            // Обработка свечей только после полной загрузки исторических данных
-            if (historicalDataLoaded && json.has("topic") && json.getString("topic").startsWith("kline")) {
+            if (initialDataLoaded && json.has("topic") && json.getString("topic").startsWith("kline")) {
                 JSONArray dataArray = json.getJSONArray("data");
                 if (dataArray.length() > 0) {
                     JSONObject data = dataArray.getJSONObject(0);
-
+                    long timestamp = data.getLong("start");
+                    double open = data.getDouble("open");
+                    double high = data.getDouble("high");
+                    double low = data.getDouble("low");
+                    double close = data.getDouble("close");
+                    double volume = data.getDouble("volume");
                     Boolean confirm = data.getBoolean("confirm");
-                    if (confirm) {
-                        long timestamp = data.getLong("start");
-                        double open = data.getDouble("open");
-                        double high = data.getDouble("high");
-                        double low = data.getDouble("low");
-                        double close = data.getDouble("close");
-                        double volume = data.getDouble("volume");
-                        dbManager.saveCandle(timestamp, open, high, low, close, volume);
-                        System.out.println("New candle received: timestamp=" + timestamp + ", close=" + close + ", volume=" + volume);
 
+                    if (confirm) {
+                        dbManager.saveCandle(timestamp, open, high, low, close, volume);
+                        //System.out.println("New confirmed candle received: timestamp=" + timestamp + ", close=" + close + ", volume=" + volume);
+                        printSortedValues(high, low, neuralNetwork.getPredictedPrice());
                         Candle currentCandle = new Candle(timestamp, open, high, low, close, volume);
 
-                        // Пересчёт индикаторов и зон
                         indicators.calculateAndSaveIndicators();
                         imbalanceZones.calculateAndSaveZones();
-
-                        // Переобучение модели
                         neuralNetwork.trainModel();
-
-                        // Предсказание
-                        double[] input = neuralNetwork.getInputForCandle(currentCandle);
-                        double predictedPrice = neuralNetwork.predict(input);
+                        double predictedPrice = neuralNetwork.getPredictedPrice();
                         webSocketHandler.broadcastPrediction(predictedPrice);
+                    } else {
+                        //System.out.println("Received unconfirmed candle: timestamp=" + timestamp + ", close=" + close + ", skipping processing.");
                     }
-                } else {
-                    System.out.println("Received kline message with empty data array");
                 }
             }
         } catch (Exception e) {
             System.err.println("Error processing WebSocket message: " + e.getMessage());
+            System.out.println("Last raw message: " + message);
             e.printStackTrace();
         }
     }
 
+    public static void printSortedValues(double high, double low, double predicted) {
+        final String RESET = "\u001B[0m";
+        final String RED = "\u001B[31m";
+        final String GREEN = "\u001B[32m";
+        final String BLUE = "\u001B[34m";
+
+        Map<String, Double> values = new HashMap<>();
+        values.put("High 🔺", high);
+        values.put("Low  🔻", low);
+        values.put("Predicted ▄", predicted);  // Кирпичик в виде ▄ для Predicted
+
+        List<Map.Entry<String, Double>> sorted = new ArrayList<>(values.entrySet());
+        sorted.sort((a, b) -> Double.compare(b.getValue(), a.getValue())); // по убыванию
+
+        System.out.println("=============================");
+        for (Map.Entry<String, Double> entry : sorted) {
+            String label = entry.getKey();
+            double value = entry.getValue();
+            String color;
+
+            if (label.startsWith("High")) {
+                color = GREEN;
+            } else if (label.startsWith("Low")) {
+                color = RED;
+            } else {
+                color = BLUE;
+            }
+
+            System.out.printf("%s%-16s: %.2f%s%n", color, label, value, RESET);
+        }
+        System.out.println("=============================");
+    }
+
+    public static long getTimeframeMillis(String timeframeStr) {
+        int minutes;
+
+        if (timeframeStr.endsWith("m")) {
+            minutes = Integer.parseInt(timeframeStr.replace("m", ""));
+        } else if (timeframeStr.endsWith("h")) {
+            minutes = Integer.parseInt(timeframeStr.replace("h", "")) * 60;
+        } else if (timeframeStr.endsWith("d")) {
+            minutes = Integer.parseInt(timeframeStr.replace("d", "")) * 60 * 24;
+        } else {
+            // Если нет суффикса — считаем, что указано в минутах
+            minutes = Integer.parseInt(timeframeStr);
+        }
+
+        return minutes * 60 * 1000L;
+    }
+    private static long getNextStartTime(long lastCandleTime, String timeframeStr) {
+        int minutes;
+
+        if (timeframeStr.endsWith("m")) {
+            minutes = Integer.parseInt(timeframeStr.replace("m", ""));
+        } else if (timeframeStr.endsWith("h")) {
+            minutes = Integer.parseInt(timeframeStr.replace("h", "")) * 60;
+        } else if (timeframeStr.endsWith("d")) {
+            minutes = Integer.parseInt(timeframeStr.replace("d", "")) * 60 * 24;
+        } else {
+            // Если нет суффикса — по умолчанию считаем, что это минуты (например, "1", "15")
+            minutes = Integer.parseInt(timeframeStr);
+        }
+
+        return lastCandleTime + minutes * 60 * 1000L;
+    }
     @OnClose
     public void onClose(Session session, CloseReason reason) {
         this.webSocketSession = null;
         System.out.println("WebSocket closed: " + reason.getReasonPhrase());
-        connectWebSocket(); // Переподключение
+        connectWebSocket();
     }
 
     @OnError

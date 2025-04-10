@@ -22,7 +22,9 @@ public class DatabaseManager {
                             "timestamp INTEGER PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)");
             conn.createStatement().execute(
                     "CREATE TABLE IF NOT EXISTS indicators (" +
-                            "timestamp INTEGER PRIMARY KEY, sma REAL, rsi REAL, stochastic_k REAL, stochastic_d REAL)");
+                            "timestamp INTEGER PRIMARY KEY, sma REAL, rsi REAL, " +
+                            "stochastic_k REAL, stochastic_d REAL, " +
+                            "stoch_rsi_k REAL, stoch_rsi_d REAL)");
             conn.createStatement().execute(
                     "CREATE TABLE IF NOT EXISTS imbalance_zones (" +
                             "timestamp INTEGER PRIMARY KEY, price REAL, volume REAL)");
@@ -71,7 +73,7 @@ public class DatabaseManager {
                 stmt.setString(2, side);
                 stmt.setDouble(3, qty);
                 stmt.executeUpdate();
-                System.out.println("Saved liquidation: " + side + " " + qty + " at " + timestamp);
+                //System.out.println("Saved liquidation: " + side + " " + qty + " at " + timestamp);
             } catch (SQLException e) {
                 System.err.println("Error saving liquidation: " + e.getMessage());
                 e.printStackTrace();
@@ -79,22 +81,22 @@ public class DatabaseManager {
         }
     }
 
-    public void saveIndicators(long timestamp, double sma, double rsi, double stochasticK, double stochasticD) {
+    public void saveIndicators(long timestamp, double sma, double rsi, double stochasticK, double stochasticD,
+                               double stochRsiK, double stochRsiD) {
         synchronized (lock) {
             try (Connection conn = getConnection();
                  PreparedStatement stmt = conn.prepareStatement(
-                         "INSERT OR REPLACE INTO indicators (timestamp, sma, rsi, stochastic_k, stochastic_d) VALUES (?, ?, ?, ?, ?)")) {
+                         "INSERT OR REPLACE INTO indicators (timestamp, sma, rsi, stochastic_k, stochastic_d, stoch_rsi_k, stoch_rsi_d) " +
+                                 "VALUES (?, ?, ?, ?, ?, ?, ?)")) {
                 stmt.setLong(1, timestamp);
                 stmt.setDouble(2, sma);
                 stmt.setDouble(3, rsi);
                 stmt.setDouble(4, stochasticK);
                 stmt.setDouble(5, stochasticD);
-                int rowsAffected = stmt.executeUpdate();
-                if (rowsAffected > 0) {
-                   // System.out.println("Saved indicators: timestamp=" + timestamp + ", sma=" + sma);
-                }
+                stmt.setDouble(6, stochRsiK);
+                stmt.setDouble(7, stochRsiD);
+                stmt.executeUpdate();
             } catch (SQLException e) {
-                System.err.println("Error saving indicators: " + e.getMessage());
                 e.printStackTrace();
             }
         }
@@ -151,5 +153,10 @@ public class DatabaseManager {
                 return 0;
             }
         }
+    }
+
+    public Candle getLastCandle() {
+        List<Candle> candles = getCandles(1);
+        return candles.isEmpty() ? null : candles.get(0);
     }
 }

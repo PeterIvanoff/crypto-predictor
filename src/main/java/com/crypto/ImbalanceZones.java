@@ -16,7 +16,7 @@ public class ImbalanceZones {
 
     public void calculateAndSaveZones() {
         // Получаем все свечи (1000, как в таблице)
-        List<Candle> candles = dbManager.getCandles(1000);
+        List<Candle> candles = dbManager.getCandles(Constants.TRAINING_PERIOD);
         if (candles.isEmpty()) {
             System.out.println("No candles available to calculate imbalance zones.");
             return;
@@ -35,7 +35,7 @@ public class ImbalanceZones {
 //                        ", price=" + candle.getClose() + ", volume=" + candle.getVolume());
             }
         }
-        System.out.println("Finished calculating and saving imbalance zones.");
+        //System.out.println("Finished calculating and saving imbalance zones.");
     }
 
     public double getImbalanceInfluence(double currentPrice) {

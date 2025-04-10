@@ -1,5 +1,9 @@
 package com.crypto;
 
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.TimeZone;
+
 public class Candle {
     private final long timestamp;
     private final double open;
@@ -39,5 +43,11 @@ public class Candle {
 
     public double getVolume() {
         return volume;
+    }
+    public String getFormattedTimestamp() {
+        Date date = new Date(timestamp);
+        SimpleDateFormat format = new SimpleDateFormat("dd-MM-yyyy HH:mm:ss");
+        format.setTimeZone(TimeZone.getTimeZone("GMT+2")); // Можешь заменить на "Europe/Moscow" или свою зону
+        return format.format(date);
     }
 }

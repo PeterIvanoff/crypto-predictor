@@ -16,6 +16,7 @@ import org.springframework.stereotype.Component;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 @Component
@@ -25,6 +26,7 @@ public class NeuralNetwork {
     private final ImbalanceZones imbalanceZones;
     private MultiLayerNetwork model;
     private double maxPrice;
+    private double predictedPrice;
 
     public NeuralNetwork(DatabaseManager dbManager, Indicators indicators, ImbalanceZones imbalanceZones) {
         this.dbManager = dbManager;
@@ -38,12 +40,13 @@ public class NeuralNetwork {
                 .seed(123)
                 .updater(new Adam(0.001))
                 .list()
-                .layer(0, new DenseLayer.Builder().nIn(10).nOut(20).activation(Activation.RELU).build())
-                .layer(1, new DenseLayer.Builder().nIn(20).nOut(10).activation(Activation.RELU).build())
-                .layer(2, new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
-                        .nIn(10).nOut(1).activation(Activation.IDENTITY).build())
+                .layer(0, new DenseLayer.Builder().nIn(11).nOut(20).activation(Activation.RELU).build())  // Первый слой
+                .layer(1, new DenseLayer.Builder().nIn(20).nOut(15).activation(Activation.RELU).build()) // Новый слой
+                .layer(2, new DenseLayer.Builder().nIn(15).nOut(10).activation(Activation.RELU).build()) // Сдвинутый слой
+                .layer(3, new OutputLayer.Builder(LossFunctions.LossFunction.MSE)
+                        .nIn(10).nOut(1).activation(Activation.IDENTITY).build())                       // Выходной слой
                 .build();
-
+//.regularization(true).l2(0.0001) // Добавлено
         model = new MultiLayerNetwork(conf);
         model.init();
     }
@@ -55,13 +58,14 @@ public class NeuralNetwork {
 
     public void trainModel() {
         List<Candle> candles = dbManager.getCandles(Constants.TRAINING_PERIOD);
-        System.out.println("Candles retrieved for training: " + candles.size());
+
         if (candles.size() < 50) {
             System.out.println("Not enough data to train model: " + candles.size() + " candles available.");
+            predictedPrice = 0.0;
             return;
         }
 
-        INDArray inputs = Nd4j.create(candles.size() - 1, 10);
+        INDArray inputs = Nd4j.create(candles.size() - 1, 11);
         INDArray outputs = Nd4j.create(candles.size() - 1, 1);
 
         maxPrice = candles.stream().mapToDouble(Candle::getClose).max().orElse(1.0);
@@ -69,60 +73,71 @@ public class NeuralNetwork {
         for (int i = 0; i < candles.size() - 1; i++) {
             Candle candle = candles.get(i);
             double[] input = getInputForCandle(candle);
+            if (input.length != 11) {
+                System.out.println("Error: Input array length is " + input.length + " instead of 11: " + Arrays.toString(input));
+                return;
+            }
             inputs.putRow(i, Nd4j.create(input));
             outputs.putScalar(i, 0, candles.get(i + 1).getClose());
         }
 
         inputs.divi(maxPrice);
         outputs.divi(maxPrice);
-
-        int epochs = 10; // Уменьшено для скорости
+        System.out.println("Training...");
+        int epochs = 200;
         for (int epoch = 0; epoch < epochs; epoch++) {
             model.fit(inputs, outputs);
-            if (epoch % 5 == 0) {
-                System.out.println("Epoch " + epoch + " completed");
-            }
         }
         System.out.println("Model trained with " + (candles.size() - 1) + " samples, maxPrice=" + maxPrice);
+
+        if (!candles.isEmpty()) {
+            Candle lastCandle = candles.get(candles.size() - 1);
+            double[] lastInput = getInputForCandle(lastCandle);
+            System.out.println("Last input for prediction: " + Arrays.toString(lastInput)); // Отладка
+            predictedPrice = predict(lastInput);
+        }
     }
 
     public double predict(double[] input) {
-        if (input == null || input.length != 10) {
+        if (input == null || input.length != 11) {
             System.out.println("Invalid input for prediction: " + Arrays.toString(input));
-            return 0.0;
+            return 0.0; // Возвращаем 0, но можно изменить логику
         }
-        INDArray inputArray = Nd4j.create(input, new int[]{1, 10});
+        INDArray inputArray = Nd4j.create(input, new int[]{1, 11});
         inputArray.divi(maxPrice);
         INDArray output = model.output(inputArray);
-        double predictedPrice = output.getDouble(0) * maxPrice;
-        System.out.println("Raw output: " + output.getDouble(0) + ", Predicted price: " + predictedPrice);
+        double predictedValue = output.getDouble(0) * maxPrice;
+        System.out.println("Raw output: " + output.getDouble(0) + ", Predicted price: " + predictedValue);
+        return predictedValue;
+    }
+
+    public double getPredictedPrice() {
         return predictedPrice;
     }
 
-    public double[] getInputForCandle(Candle candle) { // Сделан публичным
+    public double[] getInputForCandle(Candle candle) {
         try (var conn = dbManager.getConnection();
-             var stmt = conn.prepareStatement("SELECT sma, rsi, stochastic_k, stochastic_d FROM indicators WHERE timestamp = ?")) {
+             var stmt = conn.prepareStatement(
+                     "SELECT sma, rsi, stochastic_k, stochastic_d, stoch_rsi_k, stoch_rsi_d FROM indicators WHERE timestamp = ?")) {
             stmt.setLong(1, candle.getTimestamp());
             ResultSet rs = stmt.executeQuery();
             double sma = rs.next() ? rs.getDouble("sma") : 0.0;
             double rsi = rs.getDouble("rsi");
             double stochasticK = rs.getDouble("stochastic_k");
             double stochasticD = rs.getDouble("stochastic_d");
+            double stochRsiK = rs.getDouble("stoch_rsi_k");
+            double stochRsiD = rs.getDouble("stoch_rsi_d");
             double imbalanceInfluence = imbalanceZones.getImbalanceInfluence(candle.getClose());
             double liquidationInfluence = getLiquidationInfluence(candle.getTimestamp());
 
-            double[] input = new double[]{
+            return new double[]{
                     candle.getOpen(), candle.getHigh(), candle.getLow(), candle.getClose(),
-                    candle.getVolume(), sma, rsi, stochasticK, stochasticD, imbalanceInfluence + liquidationInfluence
-            };
-//            System.out.println("Input for candle: " +
-//                    "Open=" + input[0] + ", High=" + input[1] + ", Low=" + input[2] + ", Close=" + input[3] +
-//                    ", Volume=" + input[4] + ", SMA=" + input[5] + ", RSI=" + input[6] +
-//                    ", StochK=" + input[7] + ", StochD=" + input[8] + ", Influence=" + input[9]);
-            return input;
+                    candle.getVolume(), sma, rsi, stochasticK, stochasticD,
+                    stochRsiK, stochRsiD
+            }; // 11 элементов
         } catch (SQLException e) {
             e.printStackTrace();
-            return new double[10];
+            return new double[11];
         }
     }
 
@@ -132,7 +147,7 @@ public class NeuralNetwork {
                      "SELECT SUM(CASE WHEN side = 'long' THEN qty ELSE 0 END) as long_qty, " +
                              "SUM(CASE WHEN side = 'short' THEN qty ELSE 0 END) as short_qty " +
                              "FROM liquidations WHERE timestamp > ? AND timestamp <= ?")) {
-            stmt.setLong(1, timestamp - 15 * 60 * 1000);
+            stmt.setLong(1, timestamp - BybitClient.getTimeframeMillis(Constants.TIMEFRAME));
             stmt.setLong(2, timestamp);
             ResultSet rs = stmt.executeQuery();
             if (rs.next()) {
@@ -151,7 +166,7 @@ public class NeuralNetwork {
         try (var conn = dbManager.getConnection();
              var stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(
-                     "SELECT MAX(qty) FROM liquidations WHERE timestamp > " + (System.currentTimeMillis() - Constants.TRAINING_PERIOD * 15 * 60 * 1000))) {
+                     "SELECT MAX(qty) FROM liquidations WHERE timestamp > " + (System.currentTimeMillis() - Constants.TRAINING_PERIOD * BybitClient.getTimeframeMillis(Constants.TIMEFRAME)))) {
             return rs.next() ? rs.getDouble(1) : 1.0;
         } catch (SQLException e) {
             e.printStackTrace();
