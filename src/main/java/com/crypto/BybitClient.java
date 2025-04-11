@@ -82,55 +82,55 @@ public class BybitClient {
 //        neuralNetwork.trainModel();
     }
 
-        private void loadHistoricalData(long startTime, int limit) {
-            HttpClient client = HttpClient.newHttpClient();
-            int totalCandlesLoaded = 0;
-            long currentStart = startTime;
-            long now = System.currentTimeMillis();
+    private void loadHistoricalData(long startTime, int limit) {
+        HttpClient client = HttpClient.newHttpClient();
+        int totalCandlesLoaded = 0;
+        long currentStart = startTime;
+        long now = System.currentTimeMillis();
 
-            while ((limit == -1 && currentStart < now) || (limit > 0 && totalCandlesLoaded < limit)) {
-                String url = Constants.BYBIT_API_URL + "/v5/market/kline?category=linear&symbol=" + Constants.CURRENCY_PAIR +
-                        "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&limit=200";
+        while ((limit == -1 && currentStart < now) || (limit > 0 && totalCandlesLoaded < limit)) {
+            String url = Constants.BYBIT_API_URL + "/v5/market/kline?category=linear&symbol=" + Constants.CURRENCY_PAIR +
+                    "&interval=" + Constants.TIMEFRAME + "&start=" + currentStart + "&limit=200";
 
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(url))
-                        .GET()
-                        .build();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .GET()
+                    .build();
 
-                try {
-                    HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                    JSONObject json = new JSONObject(response.body());
-                    JSONArray result = json.getJSONObject("result").getJSONArray("list");
+            try {
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                JSONObject json = new JSONObject(response.body());
+                JSONArray result = json.getJSONObject("result").getJSONArray("list");
 
-                    if (result.length() == 0) {
-                        System.out.println("No more candles to load at timestamp: " + currentStart);
-                        break;
-                    }
-
-                    for (int i = result.length() - 1; i >= 0; i--) {
-                        JSONArray candle = result.getJSONArray(i);
-                        long timestamp = candle.getLong(0);
-                        double open = candle.getDouble(1);
-                        double high = candle.getDouble(2);
-                        double low = candle.getDouble(3);
-                        double close = candle.getDouble(4);
-                        double volume = candle.getDouble(5);
-                        dbManager.saveCandle(timestamp, open, high, low, close, volume);
-                        totalCandlesLoaded++;
-                    }
-                    System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
-
-                    currentStart = getNextStartTime(result.getJSONArray(0).getLong(0) ,
-                            Constants.TIMEFRAME);
-                } catch (Exception e) {
-                    System.err.println("Error loading candles: " + e.getMessage());
-                    e.printStackTrace();
+                if (result.length() == 0) {
+                    System.out.println("No more candles to load at timestamp: " + currentStart);
                     break;
                 }
+
+                for (int i = result.length() - 1; i >= 0; i--) {
+                    JSONArray candle = result.getJSONArray(i);
+                    long timestamp = candle.getLong(0);
+                    double open = candle.getDouble(1);
+                    double high = candle.getDouble(2);
+                    double low = candle.getDouble(3);
+                    double close = candle.getDouble(4);
+                    double volume = candle.getDouble(5);
+                    dbManager.saveCandle(timestamp, open, high, low, close, volume);
+                    totalCandlesLoaded++;
+                }
+                System.out.println("Loaded " + totalCandlesLoaded + " candles so far...");
+
+                currentStart = getNextStartTime(result.getJSONArray(0).getLong(0) ,
+                        Constants.TIMEFRAME);
+            } catch (Exception e) {
+                System.err.println("Error loading candles: " + e.getMessage());
+                e.printStackTrace();
+                break;
             }
+        }
 
         System.out.println("Total loaded " + totalCandlesLoaded + " candles into database.");
-        }
+    }
 
     private void connectWebSocket() {
         try {

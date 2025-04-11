@@ -55,7 +55,7 @@ public class DatabaseManager {
                 stmt.setDouble(6, volume);
                 int rowsAffected = stmt.executeUpdate();
                 if (rowsAffected > 0) {
-                   // System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
+                    // System.out.println("Saved candle: timestamp=" + timestamp + ", close=" + close);
                 }
             } catch (SQLException e) {
                 System.err.println("Error saving candle: " + e.getMessage());
@@ -112,7 +112,7 @@ public class DatabaseManager {
                 stmt.setDouble(3, volume);
                 int rowsAffected = stmt.executeUpdate();
                 if (rowsAffected > 0) {
-                   // System.out.println("Saved imbalance zone: timestamp=" + timestamp + ", price=" + price);
+                    // System.out.println("Saved imbalance zone: timestamp=" + timestamp + ", price=" + price);
                 }
             } catch (SQLException e) {
                 System.err.println("Error saving imbalance zone: " + e.getMessage());
